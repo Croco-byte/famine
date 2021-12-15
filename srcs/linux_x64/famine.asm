@@ -64,9 +64,8 @@ main:
 
 	; TEST
 	mov rax, FAM(famine.map_ptr)
-	add rax, elf64_ehdr.e_ident
-	mov al, [rax]
-	write_format hex, al
+	mov al, BYTE [rax]
+	cmp al, 0x7f
 
 
 
