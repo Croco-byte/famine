@@ -1,0 +1,35 @@
+	mov rdi, target_dir 
+	; === Opening the target directory ===
+	xor r15, r15
+	mov rax, SYS_OPEN
+	mov rsi, O_RDONLY
+	xor rdx, rdx
+	syscall
+
+	; === Call getents on the directory ===
+	mov rdi, rax
+	sub rsp, DIRENTS_BUFF_SIZE							; Making space on the stack for our dirent array
+	mov rsi, rsp
+	mov rdx, DIRENTS_BUFF_SIZE
+	mov rax, SYS_GETENTS
+	syscall
+
+	; === Parse getents results to get filenames ===
+_ls:													; rsi --> start of dirent array r14 --> d_reclen | r9 --> nav current dirent | r15 total d_reclen until now
+	xor r14, r14
+	mov r9, rsi
+	add r9, r15
+	mov r10, r9
+	add r9, 0x10
+	mov r14w, word [r9]
+	cmp r14, 0
+	je _exit
+	add r9, 0x2
+	mov rax, r9
+	add r15, r14
+	sub r14, 1
+	add r10, r14										; r10 --> address of dirent d_type
+	movzx r10, byte [r10]
+	write_format hex, r10
+	write_format string, rax
+	jmp _ls
