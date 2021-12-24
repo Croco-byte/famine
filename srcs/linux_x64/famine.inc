@@ -85,7 +85,8 @@ struc	famine
 	.txt_vaddr:		resq	1
 	.next_offset:	resq	1
 	.orig_entry:	resq	1
-	.payload_addr:	resq	1
+	.payload_off:	resq	1
+	.old_pwd:		resb	PATH_MAX
 endstruc
 
 

