@@ -12,7 +12,9 @@
 %define		SYS_LSEEK			8
 %define		SYS_MMAP			9
 %define		SYS_EXIT			60
+%define		SYS_FTRUNCATE		77
 %define		SYS_GETENTS			78
+%define		SYS_MUNMAP			91
 
 
 ; MMAP defines

