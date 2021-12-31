@@ -11,11 +11,11 @@
 %define		SYS_CLOSE			3
 %define		SYS_LSEEK			8
 %define		SYS_MMAP			9
+%define		SYS_MUNMAP			11
 %define		SYS_EXIT			60
 %define		SYS_FTRUNCATE		77
 %define		SYS_GETENTS			78
-%define		SYS_MUNMAP			91
-
+%define		SYS_CHMOD			90
 
 ; MMAP defines
 %define		PROT_READ			0x1
@@ -23,7 +23,6 @@
 %define		MAP_ANONYMOUS		0x20
 %define		MAP_SHARED			0x01
 %define		MAP_PRIVATE			0x02
-
 
 ; OPEN defines
 %define		O_RDONLY			00000000
@@ -90,18 +89,11 @@ struc	elf64_shdr
 	.sh_entsize:	resq	1
 endstruc
 
-; DIRENT_WRAPPER structure
-struc	dirent_wrapper
-	.total_dreclen	resq	1
-endstruc
-
 ; FAMINE structure
 struc	famine
 	.dir_fd:		resd	1
 	.dirents:		resb	DIRENTS_BUFF_SIZE
 	.total_dreclen:	resq	1
-
-	.inject_in_gap:	resb	1
 
 	.map_ptr:		resq	1
 	.gap_size:		resq	1
@@ -109,11 +101,11 @@ struc	famine
 	.txt_offset:	resq	1
 	.txt_filesz:	resq	1
 	.txt_vaddr:		resq	1
-	.next_offset:	resq	1
 	.orig_entry:	resq	1
 
 	.current_fpath:	resb	PATH_MAX
 	.fsize:			resq	1
+	.mmap_size:		resq	1
 endstruc
 
 

